@@ -1,0 +1,1204 @@
+<!-- <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ORBIT VOID: SUPERNOVA</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Verdana', sans-serif;
+            touch-action: none;
+            user-select: none;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .hud {
+            margin-top: 20px;
+            font-size: 1.5rem;
+            color: rgba(255, 255, 255, 0.8);
+            text-shadow: 0 0 10px #fff;
+            font-weight: bold;
+        }
+
+        /* New Pop-up style */
+        .pop-text {
+            position: absolute;
+            font-weight: bold;
+            font-size: 1.2rem;
+            color: #fff;
+            pointer-events: none;
+            animation: floatUp 1s ease-out forwards;
+        }
+
+        @keyframes floatUp {
+            0% { opacity: 1; transform: translateY(0) scale(1); }
+            100% { opacity: 0; transform: translateY(-50px) scale(1.5); }
+        }
+
+        .notification {
+            position: absolute;
+            top: 20%;
+            color: #00f0ff;
+            font-size: 1.5rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            opacity: 0;
+            transition: opacity 0.5s;
+            text-shadow: 0 0 20px #00f0ff;
+            background: rgba(0,0,0,0.5);
+            padding: 10px 20px;
+            border-radius: 20px;
+        }
+
+        .menu {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(10, 10, 20, 0.95);
+            border: 1px solid #444;
+            padding: 40px;
+            text-align: center;
+            pointer-events: auto;
+            border-radius: 8px;
+            min-width: 250px;
+        }
+
+        h1 { color: #fff; margin: 0 0 10px 0; font-size: 2.5rem; letter-spacing: 2px; }
+        p { color: #888; margin-bottom: 25px; line-height: 1.6; }
+        
+        .best-score { color: #ffd700; font-size: 1.1rem; margin-bottom: 20px; font-weight: bold; text-transform: uppercase; }
+        .legend { display: flex; justify-content: center; gap: 15px; margin-bottom: 20px; font-size: 0.8rem; color: #aaa; }
+        .dot { width: 10px; height: 10px; display: inline-block; border-radius: 50%; margin-right: 5px; }
+
+        button {
+            background: #fff;
+            color: #000;
+            border: none;
+            padding: 12px 30px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            font-weight: bold;
+            border-radius: 4px;
+        }
+        button:hover { background: #ccc; }
+
+        .hidden { display: none !important; }
+        .visible { opacity: 1 !important; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="hud">ALTITUDE: <span id="score">0</span></div>
+        <div id="notif" class="notification">SYSTEM UPGRADE: DUAL PROBES</div>
+        <div id="pop-layer"></div> <div id="start-screen" class="menu">
+            <h1>ORBIT VOID</h1>
+            <div class="best-score">Best: <span id="menu-best">0</span></div>
+            
+            <div class="legend">
+                <div><span class="dot" style="background:#4444aa"></span>Gravity</div>
+                <div><span class="dot" style="background:#00ff00"></span>Boost</div>
+                <div><span class="dot" style="background:#ff4444"></span>Death</div>
+            </div>
+
+            <p>1. <b>HOLD</b> to tether.<br>
+            2. <b>RELEASE</b> to launch.<br>
+            3. Survive.</p>
+            <button id="btn-start">Launch Probe</button>
+        </div>
+
+        <div id="game-over-screen" class="menu hidden">
+            <h1 style="color: #ff4444">SIGNAL LOST</h1>
+            <p>Altitude: <span id="final-score">0</span></p>
+            <div class="best-score">Best: <span id="go-best">0</span></div>
+            <button id="btn-restart">Re-Launch</button>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+/**
+ * ORBIT VOID v1.3 (Supernova Update)
+ * Features:
+ * - Multiball (Dual Probes)
+ * - NEW: Boost Nodes (Green) -> 1.5x Launch Speed
+ * - NEW: Floating Text feedback
+ */
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const notifEl = document.getElementById('notif');
+const popLayer = document.getElementById('pop-layer');
+
+// --- CONFIG ---
+const CONFIG = {
+    gravity: 0.15,
+    drag: 0.995,
+    tetherSpeed: 0.05,
+    maxTetherDist: 300,
+    scoreDivisor: 10,
+    multiballThreshold: 500,
+    boostMultiplier: 1.6, // How much green nodes boost you
+    colors: {
+        bg: '#050510',
+        player: '#fff',
+        player2: '#00f0ff',
+        node: '#4444aa', 
+        nodeBoost: '#00cc00', // Green
+        nodeActive: '#8888ff',
+        hazard: '#ff4444',
+        tether: '#ffffff'
+    }
+};
+
+// --- STATE ---
+let gameState = 'MENU';
+let maxScore = 0; 
+let bestScore = 0; 
+let cameraY = 0;
+let hasTriggeredMultiball = false;
+let probes = []; 
+let nodes = [];
+let particles = [];
+let stars = []; 
+
+// --- INPUT ---
+let isHolding = false;
+
+const handleStart = (e) => {
+    if(gameState !== 'PLAYING') return;
+    isHolding = true;
+    e.preventDefault(); 
+};
+const handleEnd = (e) => {
+    isHolding = false;
+};
+
+window.addEventListener('mousedown', handleStart);
+window.addEventListener('mouseup', handleEnd);
+window.addEventListener('touchstart', handleStart, {passive: false});
+window.addEventListener('touchend', handleEnd);
+
+document.getElementById('btn-start').addEventListener('click', initGame);
+document.getElementById('btn-restart').addEventListener('click', initGame);
+
+window.addEventListener('resize', resize);
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    stars = [];
+    for(let i=0; i<100; i++) {
+        stars.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            size: Math.random() * 2,
+            alpha: Math.random()
+        });
+    }
+}
+resize();
+
+// --- STORAGE ---
+function loadBestScore() {
+    const saved = localStorage.getItem('orbitVoidBest');
+    if (saved) bestScore = parseInt(saved, 10);
+    updateBestScoreUI();
+}
+function saveBestScore() {
+    const currentFinal = Math.floor(maxScore / CONFIG.scoreDivisor);
+    if (currentFinal > bestScore) {
+        bestScore = currentFinal;
+        localStorage.setItem('orbitVoidBest', bestScore);
+        updateBestScoreUI();
+    }
+}
+function updateBestScoreUI() {
+    document.getElementById('menu-best').innerText = bestScore;
+    document.getElementById('go-best').innerText = bestScore;
+}
+loadBestScore();
+
+// --- VISUALS ---
+function showFloatingText(text, x, y, color) {
+    const el = document.createElement('div');
+    el.className = 'pop-text';
+    el.innerText = text;
+    // Adjust for camera
+    const screenY = y - cameraY;
+    el.style.left = x + 'px';
+    el.style.top = screenY + 'px';
+    el.style.color = color;
+    popLayer.appendChild(el);
+    setTimeout(() => el.remove(), 1000);
+}
+
+// --- GAME LOGIC ---
+
+function createProbe(x, y, vx, vy, color) {
+    return {
+        x: x, y: y,
+        vx: vx, vy: vy,
+        radius: 6,
+        state: 'FREE',
+        targetNode: null,
+        angle: 0, dist: 0, angularVel: 0,
+        color: color || CONFIG.colors.player,
+        active: true
+    };
+}
+
+function initGame() {
+    maxScore = 0;
+    cameraY = 0;
+    hasTriggeredMultiball = false;
+    nodes = [];
+    particles = [];
+    isHolding = false;
+    popLayer.innerHTML = ''; // Clear floating text
+
+    probes = [
+        createProbe(canvas.width/2, canvas.height-150, (Math.random()-0.5)*10, -10, CONFIG.colors.player)
+    ];
+
+    generateNodes(-500); 
+
+    gameState = 'PLAYING';
+    document.getElementById('start-screen').classList.add('hidden');
+    document.getElementById('game-over-screen').classList.add('hidden');
+    notifEl.classList.remove('visible');
+    document.getElementById('score').innerText = '0';
+}
+
+function spawnMultiball() {
+    hasTriggeredMultiball = true;
+    const leader = probes[0]; 
+    if (!leader) return;
+
+    const clone = createProbe(leader.x, leader.y, -leader.vx, leader.vy, CONFIG.colors.player2);
+    if (leader.state === 'TETHERED') {
+        clone.state = 'TETHERED';
+        clone.targetNode = leader.targetNode;
+        clone.angle = leader.angle + Math.PI; 
+        clone.dist = leader.dist;
+        clone.angularVel = leader.angularVel;
+    }
+    probes.push(clone);
+    notifEl.innerText = "SYSTEM UPGRADE: DUAL PROBES";
+    notifEl.classList.add('visible');
+    setTimeout(() => notifEl.classList.remove('visible'), 3000);
+}
+
+function generateNodes(minY) {
+    let highestY = nodes.length > 0 ? nodes[nodes.length-1].y : canvas.height;
+    while (highestY > minY) {
+        highestY -= (100 + Math.random() * 150); 
+        
+        let type = 'SAFE';
+        const rand = Math.random();
+
+        // 15% Chance of Hazard (if score > 500)
+        if (Math.abs(maxScore) > 500 && rand < 0.15) {
+            type = 'HAZARD';
+        }
+        // 10% Chance of BOOST Node (Green)
+        else if (rand > 0.85) {
+            type = 'BOOST';
+        }
+
+        nodes.push({
+            x: Math.random() * (canvas.width - 100) + 50,
+            y: highestY,
+            radius: 10 + Math.random() * 15,
+            type: type,
+            pulse: 0 // For animation
+        });
+    }
+    nodes = nodes.filter(n => n.y < cameraY + canvas.height + 200);
+}
+
+function findNearestNode(p) {
+    let nearest = null;
+    let minDst = Infinity;
+    nodes.forEach(n => {
+        if(n.type === 'HAZARD') return; 
+        const dx = p.x - n.x;
+        const dy = p.y - n.y;
+        const dst = Math.sqrt(dx*dx + dy*dy);
+        if (dst < minDst && dst < CONFIG.maxTetherDist) {
+            minDst = dst;
+            nearest = n;
+        }
+    });
+    return nearest;
+}
+
+function gameOver() {
+    gameState = 'GAMEOVER';
+    const finalScore = Math.floor(maxScore / CONFIG.scoreDivisor);
+    document.getElementById('final-score').innerText = finalScore;
+    saveBestScore();
+    document.getElementById('game-over-screen').classList.remove('hidden');
+}
+
+function update() {
+    if (gameState !== 'PLAYING') return;
+
+    // Score & Multiball
+    let highestProbeY = Infinity;
+    probes.forEach(p => { if (p.y < highestProbeY) highestProbeY = p.y; });
+
+    let currentAlt = (canvas.height - highestProbeY);
+    if (currentAlt > maxScore) maxScore = currentAlt;
+    
+    const displayScore = Math.floor(maxScore / CONFIG.scoreDivisor);
+    document.getElementById('score').innerText = displayScore;
+
+    if (!hasTriggeredMultiball && displayScore >= CONFIG.multiballThreshold) spawnMultiball();
+
+    // Camera
+    if (probes.length > 0) {
+        let targetCamY = highestProbeY - canvas.height / 2;
+        if (targetCamY < cameraY) cameraY = cameraY * 0.95 + targetCamY * 0.05;
+    }
+    generateNodes(cameraY - canvas.height); 
+
+    // Animate Nodes (Pulse Green ones)
+    nodes.forEach(n => {
+        if(n.type === 'BOOST') n.pulse += 0.1;
+    });
+
+    // Probes Loop
+    for (let i = probes.length - 1; i >= 0; i--) {
+        let p = probes[i];
+
+        if (p.state === 'FREE') {
+            p.vy += CONFIG.gravity;
+            p.vx *= CONFIG.drag;
+            p.vy *= CONFIG.drag;
+            p.x += p.vx;
+            p.y += p.vy;
+
+            if (isHolding) {
+                const target = findNearestNode(p);
+                if (target) {
+                    p.state = 'TETHERED';
+                    p.targetNode = target;
+                    const dx = p.x - target.x;
+                    const dy = p.y - target.y;
+                    p.dist = Math.sqrt(dx*dx + dy*dy);
+                    p.angle = Math.atan2(dy, dx);
+                    const vTan = p.vx * -Math.sin(p.angle) + p.vy * Math.cos(p.angle);
+                    p.angularVel = vTan / p.dist;
+                    
+                    // Small "snap" effect
+                    createExplosion(p.x, p.y, '#ffffff', 5);
+                }
+            }
+        } 
+        else if (p.state === 'TETHERED') {
+            const node = p.targetNode;
+            
+            // Physics: Swing Pump
+            if (p.angularVel > 0) p.angularVel += 0.0005;
+            else p.angularVel -= 0.0005;
+
+            p.angle += p.angularVel;
+            p.x = node.x + Math.cos(p.angle) * p.dist;
+            p.y = node.y + Math.sin(p.angle) * p.dist;
+
+            if (!isHolding) {
+                p.state = 'FREE';
+                const vTan = p.angularVel * p.dist;
+                
+                // --- BOOST LOGIC ---
+                let launchMultiplier = 1.0;
+                if(node.type === 'BOOST') {
+                    launchMultiplier = CONFIG.boostMultiplier;
+                    createExplosion(p.x, p.y, CONFIG.colors.nodeBoost, 15);
+                    showFloatingText("BOOST!", p.x, p.y, '#00ff00');
+                }
+
+                p.vx = -Math.sin(p.angle) * vTan * launchMultiplier;
+                p.vy = Math.cos(p.angle) * vTan * launchMultiplier;
+                p.targetNode = null;
+            }
+        }
+
+        // Death Checks
+        let dead = false;
+        nodes.forEach(n => {
+            if(n.type === 'HAZARD') {
+                const dx = p.x - n.x;
+                const dy = p.y - n.y;
+                if (Math.sqrt(dx*dx + dy*dy) < p.radius + n.radius) {
+                    createExplosion(p.x, p.y, CONFIG.colors.hazard, 20);
+                    dead = true;
+                }
+            }
+        });
+        if (p.y > cameraY + canvas.height + 100) dead = true;
+        if (p.x < 0) { p.x = 0; p.vx *= -0.8; }
+        if (p.x > canvas.width) { p.x = canvas.width; p.vx *= -0.8; }
+
+        if (dead) probes.splice(i, 1);
+    }
+
+    if (probes.length === 0) gameOver();
+
+    // Particles Update
+    for(let i=particles.length-1; i>=0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.02;
+        if(p.life <= 0) particles.splice(i,1);
+    }
+}
+
+// --- RENDERING ---
+
+function draw() {
+    ctx.fillStyle = CONFIG.colors.bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(0, -cameraY);
+
+    // Stars
+    ctx.fillStyle = '#fff';
+    stars.forEach(s => {
+        let screenY = s.y + cameraY * 0.5; 
+        while(screenY > cameraY + canvas.height) screenY -= canvas.height;
+        while(screenY < cameraY) screenY += canvas.height;
+        ctx.globalAlpha = s.alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, screenY, s.size, 0, Math.PI*2);
+        ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    // Nodes
+    nodes.forEach(n => {
+        ctx.beginPath();
+        let r = n.radius;
+        // Pulse effect for Boost nodes
+        if(n.type === 'BOOST') r += Math.sin(n.pulse)*2; 
+        
+        ctx.arc(n.x, n.y, r, 0, Math.PI*2);
+        
+        if (n.type === 'HAZARD') ctx.fillStyle = CONFIG.colors.hazard;
+        else if (n.type === 'BOOST') ctx.fillStyle = CONFIG.colors.nodeBoost;
+        else ctx.fillStyle = CONFIG.colors.node;
+        
+        ctx.fill();
+
+        // Inner core
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r * 0.6, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fill();
+    });
+
+    // Probes
+    probes.forEach(p => {
+        if (p.state === 'TETHERED' && p.targetNode) {
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.targetNode.x, p.targetNode.y);
+            ctx.strokeStyle = CONFIG.colors.tether;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI*2);
+        ctx.fillStyle = p.color;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = p.color;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    });
+
+    // Particles
+    particles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life;
+        ctx.beginPath();
+        ctx.rect(p.x, p.y, 4, 4);
+        ctx.fill();
+    });
+
+    ctx.restore();
+    requestAnimationFrame(draw);
+}
+
+function createExplosion(x, y, color, count) {
+    for(let i=0; i< (count || 10); i++) {
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random()-0.5)*10,
+            vy: (Math.random()-0.5)*10,
+            life: 1.0,
+            color: color || '#ffaa00'
+        });
+    }
+}
+
+setInterval(update, 1000/60);
+requestAnimationFrame(draw);
+
+</script>
+</body>
+</html> -->
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ORBIT VOID: V1.5</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Verdana', sans-serif;
+            touch-action: none;
+            user-select: none;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .hud {
+            margin-top: 20px;
+            font-size: 1.5rem;
+            color: rgba(255, 255, 255, 0.8);
+            text-shadow: 0 0 10px #fff;
+            font-weight: bold;
+            z-index: 10;
+        }
+
+        .danger-warning {
+            position: absolute;
+            bottom: 50px;
+            color: #ff0000;
+            font-size: 2rem;
+            font-weight: 900;
+            letter-spacing: 5px;
+            opacity: 0;
+            animation: pulse 0.5s infinite alternate;
+        }
+
+        @keyframes pulse {
+            from { opacity: 0.2; transform: scale(1); }
+            to { opacity: 1; transform: scale(1.1); }
+        }
+
+        .pop-text {
+            position: absolute;
+            font-weight: bold;
+            font-size: 1.2rem;
+            color: #fff;
+            pointer-events: none;
+            animation: floatUp 1s ease-out forwards;
+        }
+
+        @keyframes floatUp {
+            0% { opacity: 1; transform: translateY(0) scale(1); }
+            100% { opacity: 0; transform: translateY(-50px) scale(1.5); }
+        }
+
+        .notification {
+            position: absolute;
+            top: 20%;
+            color: #00f0ff;
+            font-size: 1.5rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            opacity: 0;
+            transition: opacity 0.5s;
+            text-shadow: 0 0 20px #00f0ff;
+            background: rgba(0,0,0,0.5);
+            padding: 10px 20px;
+            border-radius: 20px;
+        }
+
+        .menu {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(10, 10, 20, 0.95);
+            border: 1px solid #444;
+            padding: 40px;
+            text-align: center;
+            pointer-events: auto;
+            border-radius: 8px;
+            min-width: 250px;
+            z-index: 20;
+        }
+
+        h1 { color: #fff; margin: 0 0 10px 0; font-size: 2.5rem; letter-spacing: 2px; }
+        p { color: #888; margin-bottom: 25px; line-height: 1.6; }
+        
+        .best-score { color: #ffd700; font-size: 1.1rem; margin-bottom: 20px; font-weight: bold; text-transform: uppercase; }
+        .legend { display: flex; justify-content: center; gap: 15px; margin-bottom: 20px; font-size: 0.8rem; color: #aaa; }
+        .dot { width: 10px; height: 10px; display: inline-block; border-radius: 50%; margin-right: 5px; }
+
+        button {
+            background: #fff;
+            color: #000;
+            border: none;
+            padding: 12px 30px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            font-weight: bold;
+            border-radius: 4px;
+        }
+        button:hover { background: #ccc; }
+
+        .hidden { display: none !important; }
+        .visible { opacity: 1 !important; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="hud">ALTITUDE: <span id="score">0</span></div>
+        <div id="notif" class="notification">SYSTEM UPGRADE: DUAL PROBES</div>
+        <div id="danger" class="danger-warning">VOID APPROACHING</div>
+        <div id="pop-layer"></div>
+
+        <div id="start-screen" class="menu">
+            <h1>ORBIT VOID</h1>
+            <div class="best-score">Best: <span id="menu-best">0</span></div>
+            
+            <div class="legend">
+                <div><span class="dot" style="background:#4444aa"></span>Gravity</div>
+                <div><span class="dot" style="background:#00ff00"></span>Boost</div>
+                <div><span class="dot" style="background:#ff4444"></span>Death</div>
+            </div>
+
+            <p>1. <b>HOLD</b> to tether.<br>
+            2. <b>RELEASE</b> to launch.<br>
+            3. <b>CLIMB FAST</b> (The void rises).</p>
+            <button id="btn-start">Launch Probe</button>
+        </div>
+
+        <div id="game-over-screen" class="menu hidden">
+            <h1 style="color: #ff4444">SIGNAL LOST</h1>
+            <p>Altitude: <span id="final-score">0</span></p>
+            <div class="best-score">Best: <span id="go-best">0</span></div>
+            <button id="btn-restart">Re-Launch</button>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+/**
+ * ORBIT VOID v1.5 (Fair Play Update)
+ * Improvements:
+ * - Guaranteed Safe Start: A node is always placed near the player at start.
+ * - Fair Gen: Prevents consecutive hazards (Red-Red sequences impossible).
+ * - Density: Ensures valid nodes are always on screen.
+ */
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const notifEl = document.getElementById('notif');
+const popLayer = document.getElementById('pop-layer');
+const dangerEl = document.getElementById('danger');
+
+// --- CONFIG ---
+const CONFIG = {
+    gravity: 0.15,
+    drag: 0.995,
+    tetherSpeed: 0.05,
+    maxTetherDist: 300,
+    scoreDivisor: 10,
+    multiballThreshold: 500,
+    boostMultiplier: 1.6, 
+    // Auto Scroll / Difficulty
+    autoScrollStartScore: 100, 
+    autoScrollBase: 0.3,       
+    autoScrollScaling: 2000,   
+    colors: {
+        bg: '#050510',
+        player: '#fff',
+        player2: '#00f0ff',
+        node: '#4444aa', 
+        nodeBoost: '#00cc00', 
+        nodeActive: '#8888ff',
+        hazard: '#ff4444',
+        tether: '#ffffff'
+    }
+};
+
+// --- STATE ---
+let gameState = 'MENU';
+let maxScore = 0; 
+let bestScore = 0; 
+let cameraY = 0;
+let hasTriggeredMultiball = false;
+let probes = []; 
+let nodes = [];
+let particles = [];
+let stars = []; 
+
+// --- INPUT ---
+let isHolding = false;
+
+const handleStart = (e) => {
+    if(gameState !== 'PLAYING') return;
+    isHolding = true;
+    e.preventDefault(); 
+};
+const handleEnd = (e) => {
+    isHolding = false;
+};
+
+window.addEventListener('mousedown', handleStart);
+window.addEventListener('mouseup', handleEnd);
+window.addEventListener('touchstart', handleStart, {passive: false});
+window.addEventListener('touchend', handleEnd);
+
+document.getElementById('btn-start').addEventListener('click', initGame);
+document.getElementById('btn-restart').addEventListener('click', initGame);
+
+window.addEventListener('resize', resize);
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    stars = [];
+    for(let i=0; i<100; i++) {
+        stars.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            size: Math.random() * 2,
+            alpha: Math.random()
+        });
+    }
+}
+resize();
+
+// --- STORAGE ---
+function loadBestScore() {
+    const saved = localStorage.getItem('orbitVoidBest');
+    if (saved) bestScore = parseInt(saved, 10);
+    updateBestScoreUI();
+}
+function saveBestScore() {
+    const currentFinal = Math.floor(maxScore / CONFIG.scoreDivisor);
+    if (currentFinal > bestScore) {
+        bestScore = currentFinal;
+        localStorage.setItem('orbitVoidBest', bestScore);
+        updateBestScoreUI();
+    }
+}
+function updateBestScoreUI() {
+    document.getElementById('menu-best').innerText = bestScore;
+    document.getElementById('go-best').innerText = bestScore;
+}
+loadBestScore();
+
+// --- VISUALS ---
+function showFloatingText(text, x, y, color) {
+    const el = document.createElement('div');
+    el.className = 'pop-text';
+    el.innerText = text;
+    const screenY = y - cameraY;
+    el.style.left = x + 'px';
+    el.style.top = screenY + 'px';
+    el.style.color = color;
+    popLayer.appendChild(el);
+    setTimeout(() => el.remove(), 1000);
+}
+
+// --- GAME LOGIC ---
+
+function createProbe(x, y, vx, vy, color) {
+    return {
+        x: x, y: y,
+        vx: vx, vy: vy,
+        radius: 6,
+        state: 'FREE',
+        targetNode: null,
+        angle: 0, dist: 0, angularVel: 0,
+        color: color || CONFIG.colors.player,
+        active: true
+    };
+}
+
+function initGame() {
+    maxScore = 0;
+    cameraY = 0;
+    hasTriggeredMultiball = false;
+    nodes = [];
+    particles = [];
+    isHolding = false;
+    popLayer.innerHTML = '';
+    dangerEl.classList.remove('visible');
+
+    // 1. Spawn Player
+    const startX = canvas.width/2;
+    const startY = canvas.height - 150;
+    probes = [
+        createProbe(startX, startY, (Math.random()-0.5)*10, -10, CONFIG.colors.player)
+    ];
+
+    // 2. Spawn GUARANTEED Starter Node
+    // Placed specifically to be reachable from spawn
+    nodes.push({
+        x: startX,
+        y: startY - 180, // 180px above player
+        radius: 20,      // Slightly larger target
+        type: 'SAFE',
+        pulse: 0
+    });
+
+    // 3. Generate the rest
+    generateNodes(-500); 
+
+    gameState = 'PLAYING';
+    document.getElementById('start-screen').classList.add('hidden');
+    document.getElementById('game-over-screen').classList.add('hidden');
+    notifEl.classList.remove('visible');
+    document.getElementById('score').innerText = '0';
+}
+
+function spawnMultiball() {
+    hasTriggeredMultiball = true;
+    const leader = probes[0]; 
+    if (!leader) return;
+
+    const clone = createProbe(leader.x, leader.y, -leader.vx, leader.vy, CONFIG.colors.player2);
+    if (leader.state === 'TETHERED') {
+        clone.state = 'TETHERED';
+        clone.targetNode = leader.targetNode;
+        clone.angle = leader.angle + Math.PI; 
+        clone.dist = leader.dist;
+        clone.angularVel = leader.angularVel;
+    }
+    probes.push(clone);
+    notifEl.innerText = "SYSTEM UPGRADE: DUAL PROBES";
+    notifEl.classList.add('visible');
+    setTimeout(() => notifEl.classList.remove('visible'), 3000);
+}
+
+function generateNodes(minY) {
+    let highestY = nodes.length > 0 ? nodes[nodes.length-1].y : canvas.height;
+    
+    // We reduced the max spacing to ensure nodes are always on screen
+    while (highestY > minY) {
+        highestY -= (120 + Math.random() * 100); 
+        
+        let type = 'SAFE';
+        const rand = Math.random();
+
+        // LOGIC: Check previous node to prevent consecutive hazards
+        const lastNode = nodes[nodes.length - 1];
+        let forceSafe = false;
+        
+        if (lastNode && lastNode.type === 'HAZARD') {
+            forceSafe = true; // Previous was red, this MUST be safe
+        }
+
+        if (!forceSafe && Math.abs(maxScore) > 500 && rand < 0.15) {
+            type = 'HAZARD';
+        } else if (rand > 0.85) {
+            type = 'BOOST';
+        }
+
+        nodes.push({
+            x: Math.random() * (canvas.width - 100) + 50,
+            y: highestY,
+            radius: 10 + Math.random() * 15,
+            type: type,
+            pulse: 0 
+        });
+    }
+    
+    // Cleanup nodes below camera
+    nodes = nodes.filter(n => n.y < cameraY + canvas.height + 200);
+}
+
+function findNearestNode(p) {
+    let nearest = null;
+    let minDst = Infinity;
+    nodes.forEach(n => {
+        if(n.type === 'HAZARD') return; 
+        const dx = p.x - n.x;
+        const dy = p.y - n.y;
+        const dst = Math.sqrt(dx*dx + dy*dy);
+        if (dst < minDst && dst < CONFIG.maxTetherDist) {
+            minDst = dst;
+            nearest = n;
+        }
+    });
+    return nearest;
+}
+
+function gameOver() {
+    gameState = 'GAMEOVER';
+    dangerEl.classList.remove('visible');
+    const finalScore = Math.floor(maxScore / CONFIG.scoreDivisor);
+    document.getElementById('final-score').innerText = finalScore;
+    saveBestScore();
+    document.getElementById('game-over-screen').classList.remove('hidden');
+}
+
+function update() {
+    if (gameState !== 'PLAYING') return;
+
+    // --- SCORE & DIFFICULTY ---
+    let highestProbeY = Infinity;
+    let lowestProbeY = -Infinity; 
+
+    probes.forEach(p => { 
+        if (p.y < highestProbeY) highestProbeY = p.y;
+        if (p.y > lowestProbeY) lowestProbeY = p.y;
+    });
+
+    let currentAlt = (canvas.height - highestProbeY);
+    if (currentAlt > maxScore) maxScore = currentAlt;
+    
+    const displayScore = Math.floor(maxScore / CONFIG.scoreDivisor);
+    document.getElementById('score').innerText = displayScore;
+
+    if (!hasTriggeredMultiball && displayScore >= CONFIG.multiballThreshold) spawnMultiball();
+
+    // --- CAMERA LOGIC ---
+    let targetCamY = highestProbeY - canvas.height / 2;
+    if (targetCamY < cameraY) cameraY = cameraY * 0.95 + targetCamY * 0.05;
+
+    // Auto-Scroll
+    if (displayScore > CONFIG.autoScrollStartScore) {
+        const scrollSpeed = CONFIG.autoScrollBase + (maxScore / CONFIG.autoScrollScaling);
+        cameraY -= scrollSpeed; 
+    }
+
+    generateNodes(cameraY - canvas.height); 
+
+    // --- DANGER CHECK ---
+    const screenBottom = cameraY + canvas.height;
+    if (lowestProbeY > screenBottom - 150) {
+        dangerEl.classList.add('visible');
+    } else {
+        dangerEl.classList.remove('visible');
+    }
+
+    // --- PHYSICS LOOP ---
+    nodes.forEach(n => {
+        if(n.type === 'BOOST') n.pulse += 0.1;
+    });
+
+    for (let i = probes.length - 1; i >= 0; i--) {
+        let p = probes[i];
+
+        if (p.state === 'FREE') {
+            p.vy += CONFIG.gravity;
+            p.vx *= CONFIG.drag;
+            p.vy *= CONFIG.drag;
+            p.x += p.vx;
+            p.y += p.vy;
+
+            if (isHolding) {
+                const target = findNearestNode(p);
+                if (target) {
+                    p.state = 'TETHERED';
+                    p.targetNode = target;
+                    const dx = p.x - target.x;
+                    const dy = p.y - target.y;
+                    p.dist = Math.sqrt(dx*dx + dy*dy);
+                    p.angle = Math.atan2(dy, dx);
+                    const vTan = p.vx * -Math.sin(p.angle) + p.vy * Math.cos(p.angle);
+                    p.angularVel = vTan / p.dist;
+                    createExplosion(p.x, p.y, '#ffffff', 5);
+                }
+            }
+        } 
+        else if (p.state === 'TETHERED') {
+            const node = p.targetNode;
+            
+            if (p.angularVel > 0) p.angularVel += 0.0005;
+            else p.angularVel -= 0.0005;
+
+            p.angle += p.angularVel;
+            p.x = node.x + Math.cos(p.angle) * p.dist;
+            p.y = node.y + Math.sin(p.angle) * p.dist;
+
+            if (!isHolding) {
+                p.state = 'FREE';
+                const vTan = p.angularVel * p.dist;
+                
+                let launchMultiplier = 1.0;
+                if(node.type === 'BOOST') {
+                    launchMultiplier = CONFIG.boostMultiplier;
+                    createExplosion(p.x, p.y, CONFIG.colors.nodeBoost, 15);
+                    showFloatingText("BOOST!", p.x, p.y, '#00ff00');
+                }
+
+                p.vx = -Math.sin(p.angle) * vTan * launchMultiplier;
+                p.vy = Math.cos(p.angle) * vTan * launchMultiplier;
+                p.targetNode = null;
+            }
+        }
+
+        // Death Checks
+        let dead = false;
+        nodes.forEach(n => {
+            if(n.type === 'HAZARD') {
+                const dx = p.x - n.x;
+                const dy = p.y - n.y;
+                if (Math.sqrt(dx*dx + dy*dy) < p.radius + n.radius) {
+                    createExplosion(p.x, p.y, CONFIG.colors.hazard, 20);
+                    dead = true;
+                }
+            }
+        });
+        
+        if (p.y > cameraY + canvas.height + 60) dead = true;
+        
+        if (p.x < 0) { p.x = 0; p.vx *= -0.8; }
+        if (p.x > canvas.width) { p.x = canvas.width; p.vx *= -0.8; }
+
+        if (dead) probes.splice(i, 1);
+    }
+
+    if (probes.length === 0) gameOver();
+
+    for(let i=particles.length-1; i>=0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.02;
+        if(p.life <= 0) particles.splice(i,1);
+    }
+}
+
+// --- RENDERING ---
+
+function draw() {
+    ctx.fillStyle = CONFIG.colors.bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(0, -cameraY);
+
+    // Stars
+    ctx.fillStyle = '#fff';
+    stars.forEach(s => {
+        let screenY = s.y + cameraY * 0.5; 
+        while(screenY > cameraY + canvas.height) screenY -= canvas.height;
+        while(screenY < cameraY) screenY += canvas.height;
+        ctx.globalAlpha = s.alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, screenY, s.size, 0, Math.PI*2);
+        ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    // Void Line
+    const voidY = cameraY + canvas.height;
+    const gradient = ctx.createLinearGradient(0, voidY, 0, voidY - 100);
+    gradient.addColorStop(0, 'rgba(255, 0, 0, 0.2)');
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, voidY - 100, canvas.width, 100);
+
+    // Nodes
+    nodes.forEach(n => {
+        ctx.beginPath();
+        let r = n.radius;
+        if(n.type === 'BOOST') r += Math.sin(n.pulse)*2; 
+        
+        ctx.arc(n.x, n.y, r, 0, Math.PI*2);
+        if (n.type === 'HAZARD') ctx.fillStyle = CONFIG.colors.hazard;
+        else if (n.type === 'BOOST') ctx.fillStyle = CONFIG.colors.nodeBoost;
+        else ctx.fillStyle = CONFIG.colors.node;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r * 0.6, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fill();
+    });
+
+    // Probes
+    probes.forEach(p => {
+        if (p.state === 'TETHERED' && p.targetNode) {
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.targetNode.x, p.targetNode.y);
+            ctx.strokeStyle = CONFIG.colors.tether;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI*2);
+        ctx.fillStyle = p.color;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = p.color;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    });
+
+    particles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life;
+        ctx.beginPath();
+        ctx.rect(p.x, p.y, 4, 4);
+        ctx.fill();
+    });
+
+    ctx.restore();
+    requestAnimationFrame(draw);
+}
+
+function createExplosion(x, y, color, count) {
+    for(let i=0; i< (count || 10); i++) {
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random()-0.5)*10,
+            vy: (Math.random()-0.5)*10,
+            life: 1.0,
+            color: color || '#ffaa00'
+        });
+    }
+}
+
+setInterval(update, 1000/60);
+requestAnimationFrame(draw);
+
+</script>
+</body>
+</html> 
