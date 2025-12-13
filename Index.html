@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ORBIT VOID</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Verdana', sans-serif;
+            touch-action: none;
+            user-select: none;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .hud {
+            margin-top: 20px;
+            font-size: 1.5rem;
+            color: rgba(255, 255, 255, 0.8);
+            text-shadow: 0 0 10px #fff;
+        }
+
+        .menu {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(10, 10, 20, 0.9);
+            border: 1px solid #444;
+            padding: 40px;
+            text-align: center;
+            pointer-events: auto;
+            border-radius: 8px;
+        }
+
+        h1 { color: #fff; margin: 0 0 10px 0; font-size: 2.5rem; letter-spacing: 2px; }
+        p { color: #888; margin-bottom: 25px; line-height: 1.6; }
+        
+        button {
+            background: #fff;
+            color: #000;
+            border: none;
+            padding: 12px 30px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            font-weight: bold;
+            border-radius: 4px;
+        }
+        button:hover { background: #ccc; }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="hud">ALTITUDE: <span id="score">0</span></div>
+
+        <div id="start-screen" class="menu">
+            <h1>ORBIT VOID</h1>
+            <p>1. <b>HOLD</b> to tether to nearest node.<br>
+            2. <b>RELEASE</b> to launch.<br>
+            3. Don't fall.</p>
+            <button id="btn-start">Launch Probe</button>
+        </div>
+
+        <div id="game-over-screen" class="menu hidden">
+            <h1 style="color: #ff4444">SIGNAL LOST</h1>
+            <p>Max Altitude: <span id="final-score">0</span></p>
+            <button id="btn-restart">Re-Launch</button>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- CONFIG ---
+const CONFIG = {
+    gravity: 0.15,
+    drag: 0.995, // Air resistance
+    tetherSpeed: 0.05, // Angular acceleration assist
+    maxTetherDist: 300,
+    colors: {
+        bg: '#050510',
+        player: '#fff',
+        node: '#4444aa', // Blueish
+        nodeActive: '#8888ff',
+        hazard: '#ff4444',
+        tether: '#ffffff'
+    }
+};
+
+// --- STATE ---
+let gameState = 'MENU';
+let score = 0;
+let maxScore = 0;
+let cameraY = 0;
+
+let player = {
+    x: 0, y: 0,
+    vx: 0, vy: 0,
+    radius: 6,
+    state: 'FREE', // FREE, TETHERED
+    targetNode: null,
+    angle: 0, // Current angle around node
+    dist: 0,  // Distance to node center
+    angularVel: 0 // Speed of rotation
+};
+
+let nodes = [];
+let particles = [];
+let stars = []; // Background decoration
+
+// --- INPUT ---
+let isHolding = false;
+
+const handleStart = (e) => {
+    if(gameState !== 'PLAYING') return;
+    isHolding = true;
+    e.preventDefault(); // Prevent text selection
+};
+
+const handleEnd = (e) => {
+    isHolding = false;
+};
+
+window.addEventListener('mousedown', handleStart);
+window.addEventListener('mouseup', handleEnd);
+window.addEventListener('touchstart', handleStart, {passive: false});
+window.addEventListener('touchend', handleEnd);
+
+// Buttons
+document.getElementById('btn-start').addEventListener('click', initGame);
+document.getElementById('btn-restart').addEventListener('click', initGame);
+
+window.addEventListener('resize', resize);
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    // Regenerate stars on resize
+    stars = [];
+    for(let i=0; i<100; i++) {
+        stars.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            size: Math.random() * 2,
+            alpha: Math.random()
+        });
+    }
+}
+resize();
+
+// --- GAME LOGIC ---
+
+function initGame() {
+    score = 0;
+    maxScore = 0;
+    cameraY = 0;
+    nodes = [];
+    particles = [];
+    isHolding = false;
+
+    // Reset Player
+    player.x = canvas.width / 2;
+    player.y = canvas.height - 150;
+    player.vx = (Math.random() - 0.5) * 10; // Random start fling
+    player.vy = -10; // Upward burst
+    player.state = 'FREE';
+
+    // Initial Nodes
+    generateNodes(-500); // Generate up to -500px (above screen)
+
+    gameState = 'PLAYING';
+    document.getElementById('start-screen').classList.add('hidden');
+    document.getElementById('game-over-screen').classList.add('hidden');
+    document.getElementById('score').innerText = '0';
+}
+
+function generateNodes(minY) {
+    // Determine the highest node we currently have
+    let highestY = nodes.length > 0 ? nodes[nodes.length-1].y : canvas.height;
+    
+    // Generate nodes upward until we reach minY
+    while (highestY > minY) {
+        highestY -= (100 + Math.random() * 150); // Spacing between nodes
+        
+        let type = 'SAFE';
+        // 20% chance of hazard, but only after score > 500
+        if (Math.abs(maxScore) > 500 && Math.random() < 0.2) type = 'HAZARD';
+
+        nodes.push({
+            x: Math.random() * (canvas.width - 100) + 50, // Keep away from edges
+            y: highestY,
+            radius: 10 + Math.random() * 15,
+            type: type
+        });
+    }
+
+    // Cleanup old nodes (below camera)
+    nodes = nodes.filter(n => n.y < cameraY + canvas.height + 200);
+}
+
+function findNearestNode() {
+    let nearest = null;
+    let minDst = Infinity;
+
+    nodes.forEach(n => {
+        if(n.type === 'HAZARD') return; // Cannot tether to hazards
+        
+        const dx = player.x - n.x;
+        const dy = player.y - n.y;
+        const dst = Math.sqrt(dx*dx + dy*dy);
+
+        if (dst < minDst && dst < CONFIG.maxTetherDist) {
+            minDst = dst;
+            nearest = n;
+        }
+    });
+
+    return nearest;
+}
+
+function gameOver() {
+    gameState = 'GAMEOVER';
+    document.getElementById('final-score').innerText = Math.floor(maxScore);
+    document.getElementById('game-over-screen').classList.remove('hidden');
+}
+
+function update() {
+    if (gameState !== 'PLAYING') return;
+
+    // 1. Difficulty & Generation
+    // Score is basically inverted Y (since up is negative Y in canvas)
+    let currentAlt = (canvas.height - player.y);
+    if (currentAlt > maxScore) maxScore = currentAlt;
+    document.getElementById('score').innerText = Math.floor(maxScore / 10);
+
+    // Camera Logic (Soft follow)
+    // Target camera Y is player.y - screen center
+    let targetCamY = player.y - canvas.height / 2;
+    // Only move camera UP (to prevent falling safety net)
+    if (targetCamY < cameraY) {
+        cameraY = cameraY * 0.95 + targetCamY * 0.05;
+    }
+    
+    generateNodes(cameraY - canvas.height); // Generate ahead of view
+
+    // 2. Physics
+    if (player.state === 'FREE') {
+        // Apply Gravity
+        player.vy += CONFIG.gravity;
+        // Apply Drag
+        player.vx *= CONFIG.drag;
+        player.vy *= CONFIG.drag;
+
+        player.x += player.vx;
+        player.y += player.vy;
+
+        // Check for Tether Input
+        if (isHolding) {
+            const target = findNearestNode();
+            if (target) {
+                player.state = 'TETHERED';
+                player.targetNode = target;
+                
+                // Calculate entry angle and velocity
+                const dx = player.x - target.x;
+                const dy = player.y - target.y;
+                player.dist = Math.sqrt(dx*dx + dy*dy);
+                player.angle = Math.atan2(dy, dx);
+                
+                // Convert linear velocity to angular velocity
+                // Cross product 2D to find tangential component magnitude
+                // v_tangent = v_x * -sin(angle) + v_y * cos(angle)
+                const vTan = player.vx * -Math.sin(player.angle) + player.vy * Math.cos(player.angle);
+                
+                player.angularVel = vTan / player.dist;
+            }
+        }
+    } 
+    else if (player.state === 'TETHERED') {
+        const node = player.targetNode;
+
+        // Apply input "Swing" acceleration (pump the swing)
+        // If holding, we slightly increase speed to prevent stalling
+        if (player.angularVel > 0) player.angularVel += 0.0005;
+        else player.angularVel -= 0.0005;
+
+        // Move Angle
+        player.angle += player.angularVel;
+
+        // Update Position
+        player.x = node.x + Math.cos(player.angle) * player.dist;
+        player.y = node.y + Math.sin(player.angle) * player.dist;
+
+        // Check Release
+        if (!isHolding) {
+            player.state = 'FREE';
+            // Convert Angular back to Linear
+            // Vx = v_tan * -sin(angle)
+            // Vy = v_tan * cos(angle)
+            const vTan = player.angularVel * player.dist;
+            player.vx = -Math.sin(player.angle) * vTan;
+            player.vy = Math.cos(player.angle) * vTan;
+            player.targetNode = null;
+        }
+    }
+
+    // 3. Collision / Death
+    // Hazard Collision
+    nodes.forEach(n => {
+        if(n.type === 'HAZARD') {
+            const dx = player.x - n.x;
+            const dy = player.y - n.y;
+            if (Math.sqrt(dx*dx + dy*dy) < player.radius + n.radius) {
+                createExplosion(player.x, player.y);
+                gameOver();
+            }
+        }
+    });
+
+    // Fall Death (Bottom of screen + buffer)
+    if (player.y > cameraY + canvas.height + 100) {
+        gameOver();
+    }
+    
+    // Wall bounce
+    if (player.x < 0) { player.x = 0; player.vx *= -0.8; }
+    if (player.x > canvas.width) { player.x = canvas.width; player.vx *= -0.8; }
+
+    // 4. Particles
+    for(let i=particles.length-1; i>=0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.02;
+        if(p.life <= 0) particles.splice(i,1);
+    }
+}
+
+// --- RENDERING ---
+
+function draw() {
+    // Clear
+    ctx.fillStyle = CONFIG.colors.bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    // Apply Camera Transform
+    ctx.translate(0, -cameraY);
+
+    // Draw Stars (Parallax simplified: just static relative to cam for now, or move slightly)
+    ctx.fillStyle = '#fff';
+    stars.forEach(s => {
+        // Parallax effect: Stars move slower than camera
+        // We add cameraY to counteract the translate, then subtract a fraction of it
+        let screenY = s.y + cameraY * 0.5; 
+        // Wrap stars
+        while(screenY > cameraY + canvas.height) screenY -= canvas.height;
+        while(screenY < cameraY) screenY += canvas.height;
+        
+        ctx.globalAlpha = s.alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, screenY, s.size, 0, Math.PI*2);
+        ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    // Draw Tether line
+    if (player.state === 'TETHERED' && player.targetNode) {
+        ctx.beginPath();
+        ctx.moveTo(player.x, player.y);
+        ctx.lineTo(player.targetNode.x, player.targetNode.y);
+        ctx.strokeStyle = CONFIG.colors.tether;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]); // Dashed line
+        ctx.stroke();
+        ctx.setLineDash([]);
+    } 
+    // Draw potential tether (hint)
+    else if (player.state === 'FREE' && isHolding) {
+       // Logic handled in update, but we could visualize the scan range here
+    }
+
+    // Draw Nodes
+    nodes.forEach(n => {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius, 0, Math.PI*2);
+        ctx.fillStyle = n.type === 'HAZARD' ? CONFIG.colors.hazard : CONFIG.colors.node;
+        ctx.fill();
+        
+        // Inner detail
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius * 0.6, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fill();
+    });
+
+    // Draw Player
+    if (gameState !== 'GAMEOVER') {
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.radius, 0, Math.PI*2);
+        ctx.fillStyle = CONFIG.colors.player;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#fff';
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+
+    // Draw Particles
+    particles.forEach(p => {
+        ctx.fillStyle = '#ffaa00';
+        ctx.globalAlpha = p.life;
+        ctx.beginPath();
+        ctx.rect(p.x, p.y, 4, 4);
+        ctx.fill();
+    });
+
+    ctx.restore();
+    requestAnimationFrame(draw);
+}
+
+function createExplosion(x, y) {
+    for(let i=0; i<20; i++) {
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random()-0.5)*10,
+            vy: (Math.random()-0.5)*10,
+            life: 1.0
+        });
+    }
+}
+
+// Loop
+setInterval(update, 1000/60);
+requestAnimationFrame(draw);
+
+</script>
+</body>
+</html>
