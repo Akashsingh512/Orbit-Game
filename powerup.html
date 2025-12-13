@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ORBIT VOID: SUPERCHARGED</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Verdana', sans-serif;
+            touch-action: none;
+            user-select: none;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .hud {
+            margin-top: 20px;
+            font-size: 1.5rem;
+            color: rgba(255, 255, 255, 0.8);
+            text-shadow: 0 0 10px #fff;
+            font-weight: bold;
+        }
+
+        /* Powerup Status UI */
+        .status-bar {
+            display: flex;
+            gap: 20px;
+            margin-top: 10px;
+            height: 30px;
+        }
+        .status-icon {
+            font-size: 1rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            padding: 5px 15px;
+            border-radius: 15px;
+            opacity: 0; /* Hidden by default */
+            transition: opacity 0.3s;
+        }
+        .s-shield { background: #00f0ff; color: #000; box-shadow: 0 0 10px #00f0ff; }
+        .s-magnet { background: #ffd700; color: #000; box-shadow: 0 0 10px #ffd700; }
+
+        .menu {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(10, 10, 20, 0.9);
+            border: 1px solid #444;
+            padding: 40px;
+            text-align: center;
+            pointer-events: auto;
+            border-radius: 8px;
+            min-width: 250px;
+        }
+
+        h1 { color: #fff; margin: 0 0 10px 0; font-size: 2.5rem; letter-spacing: 2px; }
+        p { color: #888; margin-bottom: 25px; line-height: 1.6; }
+        
+        .best-score { color: #ffd700; font-size: 1.1rem; margin-bottom: 20px; font-weight: bold; text-transform: uppercase; }
+
+        button {
+            background: #fff;
+            color: #000;
+            border: none;
+            padding: 12px 30px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            font-weight: bold;
+            border-radius: 4px;
+        }
+        button:hover { background: #ccc; }
+
+        .hidden { display: none !important; }
+        .visible { opacity: 1 !important; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="hud">ALTITUDE: <span id="score">0</span></div>
+        
+        <div class="status-bar">
+            <div id="ui-shield" class="status-icon s-shield">SHIELD ACTIVE</div>
+            <div id="ui-magnet" class="status-icon s-magnet">MAGNET <span id="mag-time">0</span></div>
+        </div>
+
+        <div id="start-screen" class="menu">
+            <h1>ORBIT VOID</h1>
+            <div class="best-score">Best: <span id="menu-best">0</span></div>
+            <p>1. <b>HOLD</b> to tether.<br>
+            2. Collect <b>ORBS</b> for powers.<br>
+            3. 🛡️ Shield | 🧲 Magnet</p>
+            <button id="btn-start">Launch Probe</button>
+        </div>
+
+        <div id="game-over-screen" class="menu hidden">
+            <h1 style="color: #ff4444">SIGNAL LOST</h1>
+            <p>Altitude: <span id="final-score">0</span></p>
+            <div class="best-score">Best: <span id="go-best">0</span></div>
+            <button id="btn-restart">Re-Launch</button>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+/**
+ * ORBIT VOID v2.0 (Supercharged)
+ * New Features:
+ * - Collectible Powerups on nodes
+ * - Shield Logic (Invincibility)
+ * - Magnet Logic (Increased Range)
+ */
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- CONFIG ---
+const CONFIG = {
+    gravity: 0.15,
+    drag: 0.995,
+    tetherSpeed: 0.05,
+    baseTetherDist: 300,
+    magnetTetherDist: 600, // Range when magnet is active
+    scoreDivisor: 10,
+    colors: {
+        bg: '#050510',
+        player: '#fff',
+        node: '#4444aa', 
+        hazard: '#ff4444',
+        tether: '#ffffff',
+        shield: '#00f0ff',
+        magnet: '#ffd700'
+    }
+};
+
+// --- STATE ---
+let gameState = 'MENU';
+let score = 0;
+let maxScore = 0;
+let bestScore = 0;
+let cameraY = 0;
+
+let player = {
+    x: 0, y: 0,
+    vx: 0, vy: 0,
+    radius: 6,
+    state: 'FREE',
+    targetNode: null,
+    angle: 0, dist: 0, angularVel: 0,
+    // SUPER POWERS
+    hasShield: false,
+    magnetTimer: 0 // Frames remaining
+};
+
+let nodes = [];
+let particles = [];
+let stars = []; 
+
+// --- INPUT ---
+let isHolding = false;
+
+const handleStart = (e) => {
+    if(gameState !== 'PLAYING') return;
+    isHolding = true;
+    e.preventDefault(); 
+};
+const handleEnd = (e) => {
+    isHolding = false;
+};
+
+window.addEventListener('mousedown', handleStart);
+window.addEventListener('mouseup', handleEnd);
+window.addEventListener('touchstart', handleStart, {passive: false});
+window.addEventListener('touchend', handleEnd);
+document.getElementById('btn-start').addEventListener('click', initGame);
+document.getElementById('btn-restart').addEventListener('click', initGame);
+
+window.addEventListener('resize', resize);
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    stars = [];
+    for(let i=0; i<100; i++) {
+        stars.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            size: Math.random() * 2,
+            alpha: Math.random()
+        });
+    }
+}
+resize();
+
+// --- STORAGE ---
+function loadBestScore() {
+    const saved = localStorage.getItem('orbitVoidBest');
+    if (saved) bestScore = parseInt(saved, 10);
+    updateBestScoreUI();
+}
+function saveBestScore() {
+    const currentFinal = Math.floor(maxScore / CONFIG.scoreDivisor);
+    if (currentFinal > bestScore) {
+        bestScore = currentFinal;
+        localStorage.setItem('orbitVoidBest', bestScore);
+        updateBestScoreUI();
+    }
+}
+function updateBestScoreUI() {
+    document.getElementById('menu-best').innerText = bestScore;
+    document.getElementById('go-best').innerText = bestScore;
+}
+loadBestScore();
+
+// --- GAME LOGIC ---
+
+function initGame() {
+    score = 0;
+    maxScore = 0;
+    cameraY = 0;
+    nodes = [];
+    particles = [];
+    isHolding = false;
+
+    // Reset Player
+    player.x = canvas.width / 2;
+    player.y = canvas.height - 150;
+    player.vx = (Math.random() - 0.5) * 10; 
+    player.vy = -10; 
+    player.state = 'FREE';
+    player.hasShield = false;
+    player.magnetTimer = 0;
+
+    generateNodes(-500); 
+
+    gameState = 'PLAYING';
+    document.getElementById('start-screen').classList.add('hidden');
+    document.getElementById('game-over-screen').classList.add('hidden');
+    document.getElementById('score').innerText = '0';
+}
+
+function generateNodes(minY) {
+    let highestY = nodes.length > 0 ? nodes[nodes.length-1].y : canvas.height;
+    
+    while (highestY > minY) {
+        highestY -= (100 + Math.random() * 150); 
+        
+        let type = 'SAFE';
+        let powerup = null;
+
+        // Logic: 20% Hazard, 10% Shield, 10% Magnet
+        const rand = Math.random();
+        
+        if (Math.abs(maxScore) > 500 && rand < 0.2) {
+            type = 'HAZARD';
+        } else {
+            // If safe node, chance for powerup
+            if (rand > 0.90) powerup = 'SHIELD';
+            else if (rand > 0.80) powerup = 'MAGNET';
+        }
+
+        nodes.push({
+            x: Math.random() * (canvas.width - 100) + 50,
+            y: highestY,
+            radius: 10 + Math.random() * 15,
+            type: type,
+            powerup: powerup,
+            orbAngle: 0 // For animating the powerup orb
+        });
+    }
+    nodes = nodes.filter(n => n.y < cameraY + canvas.height + 200);
+}
+
+function findNearestNode() {
+    let nearest = null;
+    let minDst = Infinity;
+    
+    // Determine effective range (Super Power check)
+    const currentMaxDist = player.magnetTimer > 0 ? CONFIG.magnetTetherDist : CONFIG.baseTetherDist;
+
+    nodes.forEach(n => {
+        if(n.type === 'HAZARD') return; 
+        
+        const dx = player.x - n.x;
+        const dy = player.y - n.y;
+        const dst = Math.sqrt(dx*dx + dy*dy);
+
+        if (dst < minDst && dst < currentMaxDist) {
+            minDst = dst;
+            nearest = n;
+        }
+    });
+    return nearest;
+}
+
+function gameOver() {
+    gameState = 'GAMEOVER';
+    const finalScore = Math.floor(maxScore / CONFIG.scoreDivisor);
+    document.getElementById('final-score').innerText = finalScore;
+    saveBestScore();
+    document.getElementById('game-over-screen').classList.remove('hidden');
+}
+
+function update() {
+    if (gameState !== 'PLAYING') return;
+
+    // UI Updates
+    const shieldEl = document.getElementById('ui-shield');
+    const magnetEl = document.getElementById('ui-magnet');
+    
+    shieldEl.classList.toggle('visible', player.hasShield);
+    magnetEl.classList.toggle('visible', player.magnetTimer > 0);
+    document.getElementById('mag-time').innerText = Math.ceil(player.magnetTimer / 60);
+
+    // Score & Camera
+    let currentAlt = (canvas.height - player.y);
+    if (currentAlt > maxScore) maxScore = currentAlt;
+    document.getElementById('score').innerText = Math.floor(maxScore / CONFIG.scoreDivisor);
+
+    let targetCamY = player.y - canvas.height / 2;
+    if (targetCamY < cameraY) cameraY = cameraY * 0.95 + targetCamY * 0.05;
+    
+    generateNodes(cameraY - canvas.height); 
+
+    // Animate Powerup Orbs
+    nodes.forEach(n => { if(n.powerup) n.orbAngle += 0.05; });
+    
+    // Decrement Magnet
+    if (player.magnetTimer > 0) player.magnetTimer--;
+
+    // Physics
+    if (player.state === 'FREE') {
+        player.vy += CONFIG.gravity;
+        player.vx *= CONFIG.drag;
+        player.vy *= CONFIG.drag;
+        player.x += player.vx;
+        player.y += player.vy;
+
+        if (isHolding) {
+            const target = findNearestNode();
+            if (target) {
+                // Collect Powerup Logic
+                if (target.powerup === 'SHIELD') {
+                    player.hasShield = true;
+                    target.powerup = null; // Consume
+                    createExplosion(target.x, target.y, CONFIG.colors.shield);
+                } else if (target.powerup === 'MAGNET') {
+                    player.magnetTimer = 600; // 10 Seconds (60fps * 10)
+                    target.powerup = null; // Consume
+                    createExplosion(target.x, target.y, CONFIG.colors.magnet);
+                }
+
+                player.state = 'TETHERED';
+                player.targetNode = target;
+                const dx = player.x - target.x;
+                const dy = player.y - target.y;
+                player.dist = Math.sqrt(dx*dx + dy*dy);
+                player.angle = Math.atan2(dy, dx);
+                const vTan = player.vx * -Math.sin(player.angle) + player.vy * Math.cos(player.angle);
+                player.angularVel = vTan / player.dist;
+            }
+        }
+    } 
+    else if (player.state === 'TETHERED') {
+        const node = player.targetNode;
+        if (player.angularVel > 0) player.angularVel += 0.0005;
+        else player.angularVel -= 0.0005;
+
+        player.angle += player.angularVel;
+        player.x = node.x + Math.cos(player.angle) * player.dist;
+        player.y = node.y + Math.sin(player.angle) * player.dist;
+
+        if (!isHolding) {
+            player.state = 'FREE';
+            const vTan = player.angularVel * player.dist;
+            player.vx = -Math.sin(player.angle) * vTan;
+            player.vy = Math.cos(player.angle) * vTan;
+            player.targetNode = null;
+        }
+    }
+
+    // Collision
+    nodes.forEach(n => {
+        if(n.type === 'HAZARD') {
+            const dx = player.x - n.x;
+            const dy = player.y - n.y;
+            if (Math.sqrt(dx*dx + dy*dy) < player.radius + n.radius) {
+                
+                // SUPER POWER CHECK: SHIELD
+                if (player.hasShield) {
+                    player.hasShield = false; // Break shield
+                    createExplosion(player.x, player.y, CONFIG.colors.shield, 30); // Big blue boom
+                    
+                    // Bounce player away safely
+                    player.vx *= -1.5;
+                    player.vy *= -1.5;
+                } else {
+                    createExplosion(player.x, player.y, CONFIG.colors.hazard);
+                    gameOver();
+                }
+            }
+        }
+    });
+
+    if (player.y > cameraY + canvas.height + 100) gameOver();
+    if (player.x < 0) { player.x = 0; player.vx *= -0.8; }
+    if (player.x > canvas.width) { player.x = canvas.width; player.vx *= -0.8; }
+
+    // Particles
+    for(let i=particles.length-1; i>=0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.02;
+        if(p.life <= 0) particles.splice(i,1);
+    }
+}
+
+// --- RENDERING ---
+
+function draw() {
+    ctx.fillStyle = CONFIG.colors.bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(0, -cameraY);
+
+    // Stars
+    ctx.fillStyle = '#fff';
+    stars.forEach(s => {
+        let screenY = s.y + cameraY * 0.5; 
+        while(screenY > cameraY + canvas.height) screenY -= canvas.height;
+        while(screenY < cameraY) screenY += canvas.height;
+        ctx.globalAlpha = s.alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, screenY, s.size, 0, Math.PI*2);
+        ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    // Tether
+    if (player.state === 'TETHERED' && player.targetNode) {
+        ctx.beginPath();
+        ctx.moveTo(player.x, player.y);
+        ctx.lineTo(player.targetNode.x, player.targetNode.y);
+        ctx.strokeStyle = CONFIG.colors.tether;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    } else if (player.state === 'FREE' && isHolding) {
+        // Visual aid for Magnet Range
+        ctx.beginPath();
+        const range = player.magnetTimer > 0 ? CONFIG.magnetTetherDist : CONFIG.baseTetherDist;
+        ctx.arc(player.x, player.y, range, 0, Math.PI*2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.stroke();
+    }
+
+    // Nodes
+    nodes.forEach(n => {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius, 0, Math.PI*2);
+        ctx.fillStyle = n.type === 'HAZARD' ? CONFIG.colors.hazard : CONFIG.colors.node;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius * 0.6, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fill();
+
+        // Draw Powerups (Orbiting Orbs)
+        if (n.powerup) {
+            const orbitX = n.x + Math.cos(n.orbAngle) * (n.radius + 10);
+            const orbitY = n.y + Math.sin(n.orbAngle) * (n.radius + 10);
+            
+            ctx.beginPath();
+            ctx.arc(orbitX, orbitY, 6, 0, Math.PI*2);
+            ctx.fillStyle = n.powerup === 'SHIELD' ? CONFIG.colors.shield : CONFIG.colors.magnet;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = ctx.fillStyle;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+    });
+
+    if (gameState !== 'GAMEOVER') {
+        // Draw Magnet Field (Aura)
+        if (player.magnetTimer > 0) {
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius + 15, 0, Math.PI*2);
+            ctx.strokeStyle = `rgba(255, 215, 0, ${0.3 + Math.sin(Date.now()/100)*0.2})`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        // Draw Shield
+        if (player.hasShield) {
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius + 8, 0, Math.PI*2);
+            ctx.strokeStyle = CONFIG.colors.shield;
+            ctx.lineWidth = 3;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = CONFIG.colors.shield;
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+
+        // Draw Player
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.radius, 0, Math.PI*2);
+        ctx.fillStyle = CONFIG.colors.player;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#fff';
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+
+    // Particles
+    particles.forEach(p => {
+        ctx.fillStyle = p.color || '#ffaa00';
+        ctx.globalAlpha = p.life;
+        ctx.beginPath();
+        ctx.rect(p.x, p.y, 4, 4);
+        ctx.fill();
+    });
+
+    ctx.restore();
+    requestAnimationFrame(draw);
+}
+
+function createExplosion(x, y, color, count) {
+    for(let i=0; i< (count || 20); i++) {
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random()-0.5)*10,
+            vy: (Math.random()-0.5)*10,
+            life: 1.0,
+            color: color
+        });
+    }
+}
+
+setInterval(update, 1000/60);
+requestAnimationFrame(draw);
+
+</script>
+</body>
+</html>
