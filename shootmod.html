@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NEON BLAST v2</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: 'Segoe UI', sans-serif;
+            touch-action: none;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+            z-index: 10;
+        }
+
+        .hud-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .hud-text {
+            color: #fff;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 0 0 10px rgba(255,255,255,0.5);
+        }
+
+        #powerup-status {
+            font-size: 16px;
+            color: #ffff00;
+            text-align: right;
+        }
+
+        /* PAUSE BUTTON STYLE */
+        #btn-pause {
+            pointer-events: auto;
+            background: transparent;
+            border: 2px solid #fff;
+            color: #fff;
+            width: 40px; height: 40px;
+            border-radius: 50%;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            transition: all 0.2s;
+        }
+        #btn-pause:hover { background: #fff; color: #000; }
+
+        #start-screen, #pause-overlay {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            pointer-events: auto;
+            background: rgba(0,0,0,0.9);
+            padding: 40px;
+            border: 2px solid #00f0ff;
+            border-radius: 10px;
+            box-shadow: 0 0 30px rgba(0, 240, 255, 0.2);
+            z-index: 20;
+        }
+
+        h1 { margin: 0; color: #00f0ff; font-size: 40px; letter-spacing: 2px; }
+        p { color: #aaa; margin: 20px 0; font-size: 18px; }
+
+        .btn-main {
+            background: #00f0ff; color: #000;
+            border: none; padding: 15px 40px;
+            font-size: 20px; font-weight: bold;
+            cursor: pointer; border-radius: 50px;
+            transition: transform 0.1s;
+        }
+        .btn-main:hover { transform: scale(1.05); box-shadow: 0 0 20px #00f0ff; }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="hud-group">
+            <div class="hud-text">SCORE: <span id="score-el">0</span></div>
+            <div class="hud-text" style="color: #ff0055; font-size: 18px;">BEST: <span id="best-el">0</span></div>
+        </div>
+        
+        <div class="hud-group" style="align-items: flex-end;">
+            <button id="btn-pause">II</button>
+            <div id="powerup-status"></div>
+        </div>
+    </div>
+
+    <div id="start-screen">
+        <h1>NEON BLAST</h1>
+        <p>Drag to Move. Auto-Shoot.<br>Collect shapes for Power-ups!</p>
+        <button id="btn-start" class="btn-main">PLAY</button>
+    </div>
+
+    <div id="pause-overlay" class="hidden">
+        <h1>PAUSED</h1>
+        <p>Game is paused</p>
+        <button id="btn-resume" class="btn-main">RESUME</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- CONFIG ---
+const CONFIG = {
+    playerSpeed: 0.2,
+    bulletSpeed: 15,
+    baseFireRate: 6, 
+    gravity: 0.2,
+    colors: ['#ff0055', '#ffcc00', '#00f0ff', '#cc00ff']
+};
+
+// --- STATE ---
+let gameState = 'MENU'; // MENU, PLAYING, PAUSED, END
+let frames = 0;
+let score = 0;
+let bestScore = localStorage.getItem('neonBlastBest') || 0;
+document.getElementById('best-el').innerText = bestScore;
+
+// Entities
+let player = { x: 0, y: 0, width: 40, height: 40, targetX: 0 };
+let bullets = [];
+let rocks = [];
+let particles = [];
+let powerups = [];
+
+// Powerup Effects State
+let effects = {
+    spread: 0, // Timer for Tri-Shot
+    rapid: 0,  // Timer for Rapid Fire
+    shield: 0  // Timer for Shield
+};
+
+// --- RESIZE ---
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    player.y = canvas.height - 100;
+    player.x = canvas.width / 2;
+    player.targetX = canvas.width / 2;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- INPUT ---
+function handleInput(x) {
+    if(gameState === 'PLAYING') {
+        player.targetX = x;
+        // Clamp to screen
+        if(player.targetX < player.width/2) player.targetX = player.width/2;
+        if(player.targetX > canvas.width - player.width/2) player.targetX = canvas.width - player.width/2;
+    }
+}
+
+window.addEventListener('mousemove', e => handleInput(e.clientX));
+window.addEventListener('touchmove', e => {
+    e.preventDefault();
+    handleInput(e.touches[0].clientX);
+}, {passive: false});
+
+// Buttons
+document.getElementById('btn-start').addEventListener('click', startGame);
+document.getElementById('btn-pause').addEventListener('click', togglePause);
+document.getElementById('btn-resume').addEventListener('click', togglePause);
+
+// --- GAME LOGIC ---
+
+function startGame() {
+    gameState = 'PLAYING';
+    document.getElementById('start-screen').classList.add('hidden');
+    document.getElementById('pause-overlay').classList.add('hidden');
+    score = 0;
+    bullets = [];
+    rocks = [];
+    particles = [];
+    powerups = [];
+    // Reset effects
+    effects = { spread: 0, rapid: 0, shield: 0 };
+    
+    player.x = canvas.width / 2;
+    player.targetX = canvas.width / 2;
+    updateScore(0);
+}
+
+function togglePause() {
+    if(gameState === 'PLAYING') {
+        gameState = 'PAUSED';
+        document.getElementById('pause-overlay').classList.remove('hidden');
+    } else if (gameState === 'PAUSED') {
+        gameState = 'PLAYING';
+        document.getElementById('pause-overlay').classList.add('hidden');
+    }
+}
+
+function gameOver() {
+    gameState = 'END';
+    document.getElementById('start-screen').classList.remove('hidden');
+    document.querySelector('#start-screen h1').innerText = "GAME OVER";
+    document.querySelector('#start-screen p').innerHTML = `Score: ${score}<br>Tap to Restart`;
+    
+    if(score > bestScore) {
+        bestScore = score;
+        localStorage.setItem('neonBlastBest', bestScore);
+        document.getElementById('best-el').innerText = bestScore;
+    }
+}
+
+function updateScore(val) {
+    score += val;
+    document.getElementById('score-el').innerText = score;
+}
+
+// --- SPAWNING ---
+
+function spawnRock() {
+    const size = 30 + Math.random() * 50;
+    const x = Math.random() * (canvas.width - size * 2) + size;
+    const hp = Math.floor(5 + (score / 150) * 5 + Math.random() * 10);
+    const vx = (Math.random() - 0.5) * 4;
+    
+    rocks.push({
+        x: x, y: -100, vx: vx, vy: 0,
+        radius: size, hp: hp, maxHp: hp,
+        color: CONFIG.colors[Math.floor(Math.random() * CONFIG.colors.length)]
+    });
+}
+
+function spawnPowerUp() {
+    const types = ['SPREAD', 'RAPID', 'SHIELD'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    const x = Math.random() * (canvas.width - 60) + 30;
+    
+    powerups.push({
+        x: x, y: -50,
+        type: type,
+        vy: 2 + Math.random() * 2, // Falls down
+        size: 25,
+        angle: 0
+    });
+}
+
+function createExplosion(x, y, color, size) {
+    for(let i=0; i<12; i++) {
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random() - 0.5) * 12,
+            vy: (Math.random() - 0.5) * 12,
+            life: 1.0, color: color, size: size / 4
+        });
+    }
+}
+
+// --- UPDATE LOOP ---
+
+function update() {
+    if(gameState !== 'PLAYING') return;
+
+    frames++;
+
+    // 1. Manage Timers (Effects)
+    if(effects.spread > 0) effects.spread--;
+    if(effects.rapid > 0) effects.rapid--;
+    if(effects.shield > 0) effects.shield--;
+
+    // Update HUD Text for powerups
+    let statusText = "";
+    if(effects.shield > 0) statusText += `SHIELD ${(effects.shield/60).toFixed(1)}s<br>`;
+    if(effects.spread > 0) statusText += `SPREAD ${(effects.spread/60).toFixed(1)}s<br>`;
+    if(effects.rapid > 0) statusText += `RAPID ${(effects.rapid/60).toFixed(1)}s<br>`;
+    document.getElementById('powerup-status').innerHTML = statusText;
+
+
+    // 2. Player Movement
+    player.x += (player.targetX - player.x) * 0.2;
+
+  // 3. Shooting
+    const fireRate = effects.rapid > 0 ? 3 : CONFIG.baseFireRate;
+    
+    if(frames % fireRate === 0) {
+        // Define side bullet behavior
+        // Default: 0 (Straight up)
+        // Powerup: 5 (Angled outwards)
+        let sideVx = 0; 
+        if (effects.spread > 0) {
+            sideVx = 5;
+        }
+
+        // 1. Center Bullet (Always straight)
+        bullets.push({ x: player.x, y: player.y - 20, vx: 0, vy: -CONFIG.bulletSpeed });
+        
+        // 2. Left Bullet
+        bullets.push({ 
+            x: player.x - 15, 
+            y: player.y - 20, 
+            vx: -sideVx, // 0 normally, -5 with powerup
+            vy: -CONFIG.bulletSpeed 
+        });
+
+        // 3. Right Bullet
+        bullets.push({ 
+            x: player.x + 15, 
+            y: player.y - 20, 
+            vx: sideVx,  // 0 normally, +5 with powerup
+            vy: -CONFIG.bulletSpeed 
+        });
+    }
+
+    // 4. Move Bullets
+    for(let i = bullets.length - 1; i >= 0; i--) {
+        let b = bullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+        if(b.y < 0 || b.x < 0 || b.x > canvas.width) bullets.splice(i, 1);
+    }
+
+    // 5. Spawning
+    // Rocks spawn faster as score increases
+    let spawnRate = Math.max(40, 120 - Math.floor(score/100));
+    if(frames % spawnRate === 0) spawnRock();
+
+    // Powerups spawn randomly (approx every 15 seconds)
+    if(Math.random() < 0.002) spawnPowerUp();
+
+    // 6. Move Rocks & Logic
+    for(let i = rocks.length - 1; i >= 0; i--) {
+        let r = rocks[i];
+        
+        r.vy += CONFIG.gravity;
+        r.x += r.vx;
+        r.y += r.vy;
+
+        // Bounce Floor
+        if(r.y + r.radius > canvas.height) {
+            r.y = canvas.height - r.radius;
+            r.vy *= -0.95; 
+            if(Math.abs(r.vy) < 5) r.vy = -12;
+        }
+
+        // Bounce Walls
+        if(r.x - r.radius < 0) { r.x = r.radius; r.vx *= -1; }
+        if(r.x + r.radius > canvas.width) { r.x = canvas.width - r.radius; r.vx *= -1; }
+
+        // --- COLLISIONS ---
+
+        // Rock vs Player
+        const dist = Math.hypot(player.x - r.x, player.y - r.y);
+        
+        // Check Shield
+        if(effects.shield > 0 && dist < r.radius + 40) {
+            // Bounce rock away hard
+            const angle = Math.atan2(r.y - player.y, r.x - player.x);
+            r.vx = Math.cos(angle) * 15;
+            r.vy = Math.sin(angle) * 15;
+            // Slight damage to rock
+            r.hp -= 5;
+        } 
+        // Normal Hit
+        else if (dist < r.radius + 15) {
+            gameOver();
+        }
+
+        // Rock vs Bullets
+        for(let j = bullets.length - 1; j >= 0; j--) {
+            let b = bullets[j];
+            if(Math.hypot(b.x - r.x, b.y - r.y) < r.radius) {
+                r.hp--;
+                bullets.splice(j, 1);
+                r.radius = Math.max(10, r.radius - 0.5);
+
+                if(r.hp <= 0) {
+                    createExplosion(r.x, r.y, r.color, r.radius);
+                    updateScore(r.maxHp * 10);
+                    rocks.splice(i, 1);
+                    break; 
+                }
+            }
+        }
+    }
+
+    // 7. Move & Collect Powerups
+    for(let i = powerups.length - 1; i >= 0; i--) {
+        let p = powerups[i];
+        p.y += p.vy;
+        p.angle += 0.05;
+
+        // Collect
+        if(Math.hypot(player.x - p.x, player.y - p.y) < p.size + 20) {
+            // Apply Effect (Duration ~10 seconds = 600 frames)
+            if(p.type === 'SPREAD') effects.spread = 600;
+            if(p.type === 'RAPID') effects.rapid = 600000000000000;
+            if(p.type === 'SHIELD') effects.shield = 6000000000000000000000000000000000000000000000000000000000000;
+            
+            // Visual feedback
+            createExplosion(p.x, p.y, '#fff', 20);
+            updateScore(50); // Bonus score
+            powerups.splice(i, 1);
+        }
+        else if(p.y > canvas.height + 50) {
+            powerups.splice(i, 1);
+        }
+    }
+
+    // 8. Particles
+    for(let i=particles.length-1; i>=0; i--) {
+        let p = particles[i];
+        p.x += p.vx; p.y += p.vy;
+        p.life -= 0.05;
+        if(p.life <= 0) particles.splice(i, 1);
+    }
+}
+
+// --- DRAW LOOP ---
+
+function draw() {
+    // Clear
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw Player
+    if(gameState !== 'END') {
+        ctx.save();
+        ctx.translate(player.x, player.y);
+        
+        // Draw Shield visual
+        if(effects.shield > 0) {
+            ctx.beginPath();
+            ctx.arc(0, 0, 50, 0, Math.PI*2);
+            ctx.strokeStyle = `rgba(0, 240, 255, ${(Math.sin(frames*0.2)+1)/2})`;
+            ctx.lineWidth = 4;
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(0, 240, 255, 0.1)';
+            ctx.fill();
+        }
+
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.moveTo(0, -30);
+        ctx.lineTo(-20, 20);
+        ctx.lineTo(20, 20);
+        ctx.fill();
+        
+        // Glow
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = effects.rapid > 0 ? '#ff0000' : '#00f0ff';
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    }
+
+    // Draw Bullets
+    ctx.fillStyle = '#ffff00';
+    bullets.forEach(b => {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 4, 0, Math.PI*2);
+        ctx.fill();
+    });
+
+    // Draw Rocks
+    rocks.forEach(r => {
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, r.radius, 0, Math.PI*2);
+        ctx.fillStyle = r.color;
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = `bold ${Math.floor(r.radius)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(r.hp, r.x, r.y);
+    });
+
+    // Draw Powerups
+    powerups.forEach(p => {
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.angle);
+        
+        ctx.shadowBlur = 15;
+        
+        if(p.type === 'SPREAD') {
+            ctx.fillStyle = '#ffff00'; // Yellow
+            ctx.shadowColor = '#ffff00';
+            ctx.beginPath();
+            ctx.moveTo(0, -p.size/2);
+            ctx.lineTo(p.size/2, p.size/2);
+            ctx.lineTo(-p.size/2, p.size/2);
+            ctx.fill();
+        } else if (p.type === 'RAPID') {
+            ctx.fillStyle = '#ff0055'; // Red
+            ctx.shadowColor = '#ff0055';
+            ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size);
+        } else if (p.type === 'SHIELD') {
+            ctx.fillStyle = '#00f0ff'; // Blue
+            ctx.shadowColor = '#00f0ff';
+            ctx.beginPath();
+            ctx.arc(0, 0, p.size/2, 0, Math.PI*2);
+            ctx.fill();
+        }
+        
+        // Inner Letter
+        ctx.fillStyle = '#000';
+        ctx.shadowBlur = 0;
+        ctx.font = 'bold 16px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(p.type[0], 0, 0); // Draws S, R, or S
+        
+        ctx.restore();
+    });
+
+    // Draw Particles
+    particles.forEach(p => {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+    });
+
+    requestAnimationFrame(() => {
+        update();
+        draw();
+    });
+}
+
+// Start Loop
+draw();
+
+</script>
+</body>
+</html>
