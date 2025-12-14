@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NEON BLAST</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: 'Segoe UI', sans-serif;
+            touch-action: none; /* Prevents scrolling on mobile */
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .hud-text {
+            color: #fff;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 0 0 10px rgba(255,255,255,0.5);
+        }
+
+        #start-screen {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            pointer-events: auto;
+            background: rgba(0,0,0,0.85);
+            padding: 40px;
+            border: 2px solid #00f0ff;
+            border-radius: 10px;
+            box-shadow: 0 0 30px rgba(0, 240, 255, 0.2);
+        }
+
+        h1 { margin: 0; color: #00f0ff; font-size: 40px; letter-spacing: 2px; }
+        p { color: #aaa; margin: 20px 0; font-size: 18px; }
+
+        button {
+            background: #00f0ff; color: #000;
+            border: none; padding: 15px 40px;
+            font-size: 20px; font-weight: bold;
+            cursor: pointer; border-radius: 50px;
+            transition: transform 0.1s;
+        }
+        button:hover { transform: scale(1.05); box-shadow: 0 0 20px #00f0ff; }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="hud-text">SCORE: <span id="score-el">0</span></div>
+        <div class="hud-text" style="color: #ff0055">BEST: <span id="best-el">0</span></div>
+    </div>
+
+    <div id="start-screen">
+        <h1>NEON BLAST</h1>
+        <p>Drag to Move. Auto-Shoot.<br>Destroy the bouncing rocks.</p>
+        <button id="btn-start">PLAY</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+/**
+ * NEON BLAST
+ * Core Mechanics: 
+ * 1. Player follows mouse x-axis.
+ * 2. Bullets stream upwards.
+ * 3. Enemies have gravity/bounce physics and HP.
+ */
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- CONFIG ---
+const CONFIG = {
+    playerSpeed: 0.2, // Smooth follow delay
+    bulletSpeed: 15,
+    fireRate: 5, // Frames between shots
+    gravity: 0.2,
+    colors: ['#ff0055', '#ffcc00', '#00f0ff', '#cc00ff']
+};
+
+// --- STATE ---
+let gameState = 'MENU';
+let frames = 0;
+let score = 0;
+let bestScore = localStorage.getItem('neonBlastBest') || 0;
+document.getElementById('best-el').innerText = bestScore;
+
+// Entities
+let player = { x: 0, y: 0, width: 40, height: 40, targetX: 0 };
+let bullets = [];
+let rocks = [];
+let particles = [];
+let difficulty = 1;
+
+// --- RESIZE ---
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    player.y = canvas.height - 100;
+    player.x = canvas.width / 2;
+    player.targetX = canvas.width / 2;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- INPUT ---
+function handleInput(x) {
+    if(gameState === 'PLAYING') {
+        player.targetX = x;
+        // Clamp to screen
+        if(player.targetX < player.width/2) player.targetX = player.width/2;
+        if(player.targetX > canvas.width - player.width/2) player.targetX = canvas.width - player.width/2;
+    }
+}
+
+window.addEventListener('mousemove', e => handleInput(e.clientX));
+window.addEventListener('touchmove', e => {
+    e.preventDefault();
+    handleInput(e.touches[0].clientX);
+}, {passive: false});
+
+document.getElementById('btn-start').addEventListener('click', startGame);
+
+// --- GAME LOGIC ---
+
+function startGame() {
+    gameState = 'PLAYING';
+    document.getElementById('start-screen').classList.add('hidden');
+    score = 0;
+    difficulty = 1;
+    bullets = [];
+    rocks = [];
+    particles = [];
+    player.x = canvas.width / 2;
+    player.targetX = canvas.width / 2;
+    updateScore(0);
+}
+
+function gameOver() {
+    gameState = 'END';
+    document.getElementById('start-screen').classList.remove('hidden');
+    document.querySelector('#start-screen h1').innerText = "GAME OVER";
+    document.querySelector('#start-screen p').innerHTML = `Score: ${score}<br>Tap to Restart`;
+    
+    if(score > bestScore) {
+        bestScore = score;
+        localStorage.setItem('neonBlastBest', bestScore);
+        document.getElementById('best-el').innerText = bestScore;
+    }
+}
+
+function updateScore(val) {
+    score += val;
+    document.getElementById('score-el').innerText = score;
+}
+
+function spawnRock() {
+    const size = 30 + Math.random() * 50;
+    const x = Math.random() * (canvas.width - size * 2) + size;
+    // HP scales with score
+    const hp = Math.floor(5 + (score / 100) * 5 + Math.random() * 10);
+    
+    // Choose start velocity (Left or Right drift)
+    const vx = (Math.random() - 0.5) * 4;
+    
+    rocks.push({
+        x: x,
+        y: -100,
+        vx: vx,
+        vy: 0,
+        radius: size,
+        hp: hp,
+        maxHp: hp,
+        color: CONFIG.colors[Math.floor(Math.random() * CONFIG.colors.length)]
+    });
+}
+
+function createExplosion(x, y, color, size) {
+    for(let i=0; i<10; i++) {
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random() - 0.5) * 10,
+            vy: (Math.random() - 0.5) * 10,
+            life: 1.0,
+            color: color,
+            size: size / 4
+        });
+    }
+}
+
+function update() {
+    if(gameState !== 'PLAYING') return;
+
+    frames++;
+
+    // 1. Player Movement (Lerp for smoothness)
+    player.x += (player.targetX - player.x) * 0.2;
+
+    // 2. Shooting
+    if(frames % CONFIG.fireRate === 0) {
+        bullets.push({ x: player.x, y: player.y - 20 });
+        // Add a second stream if score is high
+        if(score > 500) {
+            bullets.push({ x: player.x - 10, y: player.y - 10 });
+            bullets.push({ x: player.x + 10, y: player.y - 10 });
+        }
+    }
+
+    // 3. Move Bullets
+    for(let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].y -= CONFIG.bulletSpeed;
+        if(bullets[i].y < 0) bullets.splice(i, 1);
+    }
+
+    // 4. Spawning Enemies
+    // Spawn rate increases as score goes up
+    let spawnRate = Math.max(60, 180 - Math.floor(score/50));
+    if(frames % spawnRate === 0) spawnRock();
+
+    // 5. Move Rocks (Physics)
+    for(let i = rocks.length - 1; i >= 0; i--) {
+        let r = rocks[i];
+        
+        // Gravity
+        r.vy += CONFIG.gravity;
+        r.x += r.vx;
+        r.y += r.vy;
+
+        // Bounce Floor
+        if(r.y + r.radius > canvas.height) {
+            r.y = canvas.height - r.radius;
+            r.vy *= -0.95; // Bounce with slight damping
+            // Ensure minimum bounce height
+            if(Math.abs(r.vy) < 5) r.vy = -12;
+        }
+
+        // Bounce Walls
+        if(r.x - r.radius < 0) {
+            r.x = r.radius;
+            r.vx *= -1;
+        }
+        if(r.x + r.radius > canvas.width) {
+            r.x = canvas.width - r.radius;
+            r.vx *= -1;
+        }
+
+        // Collision: Rock vs Player
+        const dx = player.x - r.x;
+        const dy = player.y - r.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        // Simple hitbox approximation
+        if(dist < r.radius + 15) {
+            gameOver();
+        }
+
+        // Collision: Rock vs Bullets
+        for(let j = bullets.length - 1; j >= 0; j--) {
+            let b = bullets[j];
+            // Check if bullet is inside rock
+            const bdx = b.x - r.x;
+            const bdy = b.y - r.y;
+            if(Math.sqrt(bdx*bdx + bdy*bdy) < r.radius) {
+                // Hit!
+                r.hp--;
+                bullets.splice(j, 1);
+                
+                // Visual hit effect (shrink slightly)
+                r.radius -= 0.5;
+                if(r.radius < 10) r.radius = 10;
+
+                if(r.hp <= 0) {
+                    createExplosion(r.x, r.y, r.color, r.radius);
+                    updateScore(r.maxHp * 10);
+                    rocks.splice(i, 1);
+                    break; // Stop checking bullets for this dead rock
+                }
+            }
+        }
+    }
+
+    // 6. Particles
+    for(let i=particles.length-1; i>=0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.05;
+        if(p.life <= 0) particles.splice(i, 1);
+    }
+}
+
+function draw() {
+    // Clear
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw Player
+    if(gameState !== 'END') {
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        // Simple cannon shape
+        ctx.moveTo(player.x, player.y - 30);
+        ctx.lineTo(player.x - 20, player.y + 20);
+        ctx.lineTo(player.x + 20, player.y + 20);
+        ctx.fill();
+        
+        // Glow
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = '#00f0ff';
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+
+    // Draw Bullets
+    ctx.fillStyle = '#ffff00';
+    bullets.forEach(b => {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 4, 0, Math.PI*2);
+        ctx.fill();
+    });
+
+    // Draw Rocks
+    rocks.forEach(r => {
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, r.radius, 0, Math.PI*2);
+        ctx.fillStyle = r.color;
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // Draw HP Number
+        ctx.fillStyle = '#fff';
+        ctx.font = `bold ${Math.floor(r.radius)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(r.hp, r.x, r.y);
+    });
+
+    // Draw Particles
+    particles.forEach(p => {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+    });
+
+    requestAnimationFrame(() => {
+        update();
+        draw();
+    });
+}
+
+// Start Loop
+draw();
+
+</script>
+</body>
+</html>
